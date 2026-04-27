@@ -1,7 +1,27 @@
-\documentclass[10pt]{article}
-\usepackage[a4paper, margin=2.2cm]{geometry}
+\documentclass{article}
+
+\usepackage{arxiv}
+
+% Strip the "A Preprint" header/footer that overlaps with long titles.
+\renewcommand{\headeright}{}
+\renewcommand{\undertitle}{}
+\renewcommand{\shorttitle}{}
+\fancyhf{}
+\renewcommand{\headrulewidth}{0pt}
+\cfoot{\thepage}
+
 \usepackage[utf8]{inputenc}
-\usepackage{cite,url,hyperref,booktabs,listings,xcolor,amssymb}
+\usepackage[T1]{fontenc}
+\usepackage{hyperref}
+\usepackage{url}
+\usepackage{booktabs}
+\usepackage{amsmath,amssymb,amsfonts}
+\usepackage{xcolor}
+\usepackage{listings}
+\usepackage{cite}
+\usepackage{microtype}
+\usepackage{tikz}
+\usetikzlibrary{positioning,arrows.meta}
 
 \hypersetup{colorlinks=true, linkcolor=blue, urlcolor=blue, citecolor=blue}
 
@@ -17,105 +37,195 @@
   stringstyle=\color{green!50!black},
 }
 
-\title{\textbf{mcos-decoder: A Pure-Python Reader for MATLAB Computer Vision Toolbox \texttt{groundTruth} Objects}}
-\author{Burak Ozdemir\\
+\title{mcos-decoder: A Pure-Python Reader for MATLAB Computer Vision Toolbox \texttt{groundTruth} Objects}
+
+\author{
+  Burak Ozdemir \\
   \texttt{bozdemir@gmail.com} \\
   \href{https://github.com/bozdemir/mcos-decoder}{\texttt{github.com/bozdemir/mcos-decoder}} \\
-  DOI: \href{https://doi.org/10.5281/zenodo.19728531}{\texttt{10.5281/zenodo.19728531}}}
-\date{April 24, 2026}
+  DOI: \href{https://doi.org/10.5281/zenodo.19728531}{\texttt{10.5281/zenodo.19728531}}
+}
 
 \begin{document}
 \maketitle
 
 \begin{abstract}
 The MATLAB Computer Vision Toolbox stores video annotations as
-\texttt{groundTruth} MCOS objects inside \texttt{.mat} files. Standard
-Python loaders (\texttt{scipy.io.loadmat}, \texttt{pymatreader},
-\texttt{mat73}) expose this data only as opaque blobs in
-\texttt{\_\_function\_workspace\_\_}, blocking dataset users without a
-MATLAB license. We present \texttt{mcos-decoder}, a small pure-Python
-package (\textasciitilde 200 lines, NumPy + SciPy only) that walks the
-hidden MAT5 element stream and extracts per-frame label cells. We
-validate the decoder on the Halmstad Drone Detection Dataset
-(365 IR videos, 4 classes), where bounding-box counts match the official
-MATLAB reference for every sequence we tested. The package is released
-under the MIT licence and is available on PyPI.
+\texttt{groundTruth} MCOS (MATLAB Class Object Storage) instances inside
+\texttt{.mat} files. Standard Python loaders (\texttt{scipy.io.loadmat},
+\texttt{pymatreader}, \texttt{mat73}) surface this data only as opaque
+\texttt{\_\_function\_workspace\_\_} blobs, blocking dataset users
+without a MATLAB licence. We present \texttt{mcos-decoder}, a small
+($\sim$\,270 lines, NumPy + SciPy only) pure-Python package focused on
+extracting per-frame bounding-box labels from \texttt{groundTruth}
+objects, complementing the broader \texttt{mat-io}~\cite{matio} parser
+by exposing a single-purpose API
+(\texttt{bboxes = load\_groundtruth(file)}). We validate the decoder on
+the Halmstad Drone Detection Dataset (365 thermal IR videos, 4 classes),
+recovering 102{,}476 bounding boxes that match the official MATLAB
+reference for every sequence we tested. The package is released under
+the MIT licence and is available on PyPI.
 \end{abstract}
+
+\keywords{MATLAB \and MCOS \and groundTruth \and Computer Vision Toolbox \and Python \and MAT-file format \and dataset tooling}
 
 \section{Introduction}
 
 The MATLAB Computer Vision Toolbox stores video annotations created by
-the Video Labeler app as instances of the
-\texttt{groundTruth} class~\cite{matlabcv}. These objects are saved into
-\texttt{.mat} files, but unlike ordinary MATLAB structs they are
-serialised through MATLAB's MCOS (\emph{MATLAB Class Object Storage})
-mechanism, which writes the data into an unnamed sub-file accessible
-only as \texttt{\_\_function\_workspace\_\_}~\cite{scipyissue22736}. The
+the Video Labeler app as instances of the \texttt{groundTruth}
+class~\cite{matlabcv}. These objects are saved into \texttt{.mat} files,
+but unlike ordinary MATLAB structs they are serialised through MATLAB's
+MCOS (\emph{MATLAB Class Object Storage}) mechanism, which writes the
+data into an unnamed sub-file accessible only as
+\texttt{\_\_function\_workspace\_\_}~\cite{scipyissue22736}. The
 mainstream Python tools for reading \texttt{.mat} files
-(\texttt{scipy.io}, \texttt{mat73}, \texttt{pymatreader}) treat these
-objects as opaque blobs, so any researcher who wants to use a dataset
-distributed in this form has historically needed a MATLAB licence.
+(\texttt{scipy.io}, \texttt{mat73}~\cite{mat73},
+\texttt{pymatreader}~\cite{pymatreader}) treat these objects as opaque
+blobs, so any researcher who wants to use a dataset distributed in this
+form has historically needed a MATLAB licence.
 
 The problem is documented in long-standing open issues: SciPy
-\#22736~\cite{scipyissue22736}, the
-\texttt{DroneDetectionThesis} repository's
-\#3~\cite{droneissue3}, and several Stack
-Overflow threads~\cite{somat}. The only third-party reader at the time
-of writing is the C\#/.NET library
-\texttt{MatFileHandler}~\cite{matfilehandler}; no Python solution exists.
+\#22736~\cite{scipyissue22736} (filed 2025, still open at the time of
+writing), the \texttt{DroneDetectionThesis} repository's
+\#3~\cite{droneissue3} (filed February 2024, still open), and several
+Stack Overflow threads~\cite{somat}. The C\#/.NET library
+\texttt{MatFileHandler}~\cite{matfilehandler} provides a partial reader,
+and its accompanying \texttt{Objects.md} notes are the canonical
+reverse-engineering reference for the MCOS format. In Python, the
+general-purpose \texttt{mat-io} parser~\cite{matio} (BSD-3-Clause, on
+PyPI since April 2025) decodes MCOS opaque objects and exposes class
+properties for downstream traversal.
 
-This note describes \texttt{mcos-decoder}, a small Python package that
-reads \texttt{groundTruth} objects without requiring MATLAB. The
-implementation is short (\textasciitilde 200 lines, NumPy + SciPy only),
-permissively licensed, and validated against a published dataset.
+This paper describes \texttt{mcos-decoder}, which occupies a
+complementary niche to \texttt{mat-io}: a small, focused tool that
+returns directly the per-frame bounding-box list expected by
+computer-vision pipelines (e.g.\ tracker training, dataset loaders),
+without requiring the caller to traverse MCOS class structures. The
+implementation is short ($\sim$\,270 lines, NumPy + SciPy only),
+permissively licensed under MIT, and validated against a published
+365-video dataset.
 
 \section{Background}
 
 A MAT v5 file is a stream of typed elements: each element has an 8-byte
 tag (type, size) followed by a payload aligned to 8 bytes. Type 14
 (\texttt{miMATRIX}) elements contain nested element streams; numeric
-types contain raw arrays~\cite{matformat}. SciPy's
-\texttt{loadmat} parses ordinary numeric/struct/cell arrays but skips
-MCOS objects: when it encounters one it returns a
-\texttt{MatlabOpaque} record whose four fields (\texttt{s0}-\texttt{s2},
-\texttt{arr}) describe only the variable name, MCOS marker, and class
-name. The actual class data is written to a separate top-level array
-which SciPy renames \texttt{\_\_function\_workspace\_\_}.
+types contain raw arrays~\cite{matformat}. SciPy's \texttt{loadmat}
+parses ordinary numeric/struct/cell arrays but skips MCOS objects: when
+it encounters one it returns a \texttt{MatlabOpaque} record whose four
+fields (\texttt{s0}--\texttt{s2}, \texttt{arr}) describe only the
+variable name, MCOS marker, and class name. The actual class data is
+written to a separate top-level array which SciPy renames
+\texttt{\_\_function\_workspace\_\_}.
 
 The contents of \texttt{\_\_function\_workspace\_\_} are themselves a
 nested MAT5 stream, but the structure depends on the MCOS class. For
 \texttt{groundTruth}, empirical inspection across multiple sample files
 yields the layout summarised in Table~\ref{tab:layout}.
 
-\begin{table}[h]
+\begin{table}[ht]
 \centering
 \caption{Empirical \texttt{groundTruth} layout in
-\texttt{\_\_function\_workspace\_\_} (MATLAB R2020a-R2023a).}
+\texttt{\_\_function\_workspace\_\_} (MATLAB R2020a--R2023a).}
 \label{tab:layout}
-\begin{tabular}{lll}
+\begin{tabular}{cll}
 \toprule
-Cell size (bytes) & Depth & Meaning \\
+Cell size (B) & Depth & Meaning \\
 \midrule
-80   & 5 & Per-frame bbox cell. Contains a 4-element \texttt{double}. \\
+80   & 5 & Per-frame bbox cell (4-element \texttt{double}). \\
 112  & 5 & Per-frame empty marker (target absent). \\
-72   & 5 & Per-frame duration / timestamp metadata (skip). \\
+72   & 5 & Per-frame duration / timestamp (skip). \\
 \bottomrule
 \end{tabular}
 \end{table}
+
+\section{Existing Readers and Positioning}
+
+Table~\ref{tab:tools} summarises the Python and .NET tools that
+interact with MAT-files containing MCOS objects, and locates
+\texttt{mcos-decoder} within that ecosystem.
+
+\begin{table}[ht]
+\centering
+\caption{Existing readers that touch MAT-files containing MCOS objects.
+\emph{MCOS bytes} = the tool surfaces the opaque
+\texttt{\_\_function\_workspace\_\_} buffer to the caller; \emph{MCOS
+parsed} = it decodes class properties; \emph{Bboxes direct} = a single
+call returns \texttt{groundTruth} per-frame boxes.}
+\label{tab:tools}
+\begin{tabular}{lccccc}
+\toprule
+Tool & Pure Python & MAT v5 & MCOS bytes & MCOS parsed & Bboxes direct \\
+\midrule
+\texttt{scipy.io.loadmat}                       & \checkmark & \checkmark & \checkmark & $\times$    & $\times$ \\
+\texttt{mat73}~\cite{mat73}                     & \checkmark & v7.3 only  & $\times$   & $\times$    & $\times$ \\
+\texttt{pymatreader}~\cite{pymatreader}         & \checkmark & \checkmark & \checkmark & $\times$    & $\times$ \\
+\texttt{MatFileHandler}~\cite{matfilehandler}   & .NET only  & \checkmark & \checkmark & partial     & $\times$ \\
+\texttt{mat-io}~\cite{matio}                    & \checkmark & \checkmark & \checkmark & \checkmark  & $\times$ \\
+\midrule
+\textbf{\texttt{mcos-decoder} (ours)} & \textbf{\checkmark} & \textbf{\checkmark} & \textbf{\checkmark} & \textbf{focused} & \textbf{\checkmark} \\
+\bottomrule
+\end{tabular}
+\end{table}
+
+\texttt{mcos-decoder} differs from \texttt{mat-io} in scope and intent:
+where \texttt{mat-io} is a general MCOS-class parser that returns
+property objects requiring further user traversal,
+\texttt{mcos-decoder}'s entire public surface is a function that takes
+a path and returns the per-frame bbox list expected by computer-vision
+tooling. Its small footprint also makes it suitable for vendoring into
+pipelines that cannot pull a heavier dependency, and the implementation
+doubles as a compact pedagogical reference for the \texttt{groundTruth}
+serialisation layout.
 
 \section{Implementation}
 
 The package is two small modules:
 
 \begin{itemize}
-  \item \texttt{mcos\_decoder.stream} — generic walker that yields
+  \item \texttt{mcos\_decoder.stream} --- generic walker that yields
         \texttt{MatElement} records (type, offset, payload, children)
         for the entire MAT5 element tree.
-  \item \texttt{mcos\_decoder.groundtruth} — high-level extractor that
-        walks the tree, collects per-frame label cells from
+  \item \texttt{mcos\_decoder.groundtruth} --- high-level extractor
+        that walks the tree, collects per-frame label cells from
         \texttt{depth\,$=$\,5}, and returns a list of
         \texttt{(x, y, w, h)} tuples or \texttt{None}.
 \end{itemize}
+
+The full pipeline from a MATLAB-saved file to a per-frame bbox list is
+shown in Figure~\ref{fig:pipeline}.
+
+\begin{figure}[ht]
+\centering
+\begin{tikzpicture}[
+  node distance=0.55cm,
+  every node/.style={font=\small},
+  box/.style={rectangle, draw, rounded corners, minimum width=8.5cm,
+              minimum height=0.7cm, align=center, inner sep=4pt},
+  arrow/.style={-Stealth, thick}
+]
+  \node[box] (mat) {\texttt{labels.mat} (MAT v5 stream)};
+  \node[box, below=of mat] (loadmat) {\texttt{scipy.io.loadmat}};
+  \node[box, below=of loadmat] (fw)
+    {opaque \texttt{\_\_function\_workspace\_\_} buffer};
+  \node[box, below=of fw] (walk)
+    {\texttt{MatStream.walk} (recursive element scan)};
+  \node[box, below=of walk] (cells)
+    {classify cells at depth 5 by byte size\\(80\,B bbox / 112\,B empty)};
+  \node[box, below=of cells] (out)
+    {\texttt{list[(x, y, w, h) | None]} per frame};
+  \draw[arrow] (mat)     -- (loadmat);
+  \draw[arrow] (loadmat) -- (fw);
+  \draw[arrow] (fw)      -- (walk);
+  \draw[arrow] (walk)    -- (cells);
+  \draw[arrow] (cells)   -- (out);
+\end{tikzpicture}
+\caption{Decoder pipeline. \texttt{scipy.io.loadmat} surfaces the
+opaque \texttt{\_\_function\_workspace\_\_} buffer;
+\texttt{mcos-decoder} walks its MAT5 element tree, classifies cells at
+depth 5 by byte size, and emits a per-frame bbox list.}
+\label{fig:pipeline}
+\end{figure}
 
 The public API is one function:
 
@@ -126,27 +236,27 @@ bboxes = load_groundtruth("IR_DRONE_001_LABELS.mat")
 # list[(x,y,w,h) | None] of length n_frames
 \end{lstlisting}
 
-A lower-level \texttt{MatStream} interface is also available for callers
-that need to inspect a non-default MCOS layout (e.g. older MATLAB
-versions or different toolbox classes).
+A lower-level \texttt{MatStream} interface is also available for
+callers that need to inspect a non-default MCOS layout (e.g.\ older
+MATLAB versions or different toolbox classes).
 
 \section{Validation}
 
 We validated the decoder on the Halmstad Drone Detection
-Dataset~\cite{svanstrom2021}, which distributes 365 thermal IR videos of
-four target classes (\textsc{airplane}, \textsc{bird}, \textsc{drone},
-\textsc{helicopter}). For every sequence in
-Table~\ref{tab:halmstad-validation} we compared the decoder's per-frame
-output to the video's frame count and the visible-frame count obtainable
-from MATLAB's \texttt{selectLabels} on the original
+Dataset~\cite{svanstrom2021,halmstadzenodo}, which distributes 365
+thermal IR videos of four target classes (\textsc{airplane},
+\textsc{bird}, \textsc{drone}, \textsc{helicopter}). For every sequence
+in Table~\ref{tab:halmstad-validation} we compared the decoder's
+per-frame output to the video's frame count and the visible-frame count
+obtainable from MATLAB's \texttt{selectLabels} on the original
 \texttt{groundTruth}.
 
-\begin{table}[h]
+\begin{table}[ht]
 \centering
 \caption{Decoder validation on Halmstad IR sequences (one example per
-class, all classes verified for the full 365-video set).}
+class; all classes verified across the full 365-video set).}
 \label{tab:halmstad-validation}
-\begin{tabular}{lrrrl}
+\begin{tabular}{lrrrc}
 \toprule
 Sequence & Frames & Decoded slots & With target & Match \\
 \midrule
@@ -165,16 +275,18 @@ confirm that bbox positions and sizes round-trip correctly.
 \section{Limitations and Future Work}
 
 The current decoder addresses single-target-per-frame
-\texttt{groundTruth} objects with the layout in
-Table~\ref{tab:layout}. Multi-target labels (e.g. MOT-style annotations
-where one frame can carry several boxes), categorical labels, polygon
-ROIs, and the related \texttt{audioLabeler}/\texttt{signalLabeler} class
-families are planned for v0.2. Support for older MATLAB releases (pre
-R2020a) where the depth or cell sizes differ slightly is straightforward
-through the existing \texttt{frame\_depth}, \texttt{bbox\_size}, and
-\texttt{empty\_size} parameters of \texttt{load\_groundtruth}.
+\texttt{groundTruth} objects with the layout in Table~\ref{tab:layout}.
+Multi-target labels (e.g.\ MOT-style annotations where one frame can
+carry several boxes), categorical labels, polygon ROIs, and the related
+\texttt{audioLabeler}/\texttt{signalLabeler} class families are planned
+for v0.2; users requiring a richer view of MCOS class properties (and
+not just per-frame boxes) are referred to \texttt{mat-io}~\cite{matio}.
+Support for older MATLAB releases (pre R2020a) where the depth or cell
+sizes differ slightly is straightforward through the existing
+\texttt{frame\_depth}, \texttt{bbox\_size}, and \texttt{empty\_size}
+parameters of \texttt{load\_groundtruth}.
 
-\section{Availability}
+\section{Availability and Reproducibility}
 
 \texttt{mcos-decoder} is released under the MIT licence at
 \href{https://github.com/bozdemir/mcos-decoder}{\texttt{github.com/bozdemir/mcos-decoder}}
@@ -182,8 +294,28 @@ and on PyPI as \texttt{mcos-decoder}. Contributions adding new dataset
 layouts, additional MCOS classes, or pre-computed test fixtures are
 welcome.
 
+The validation in Table~\ref{tab:halmstad-validation} uses
+\texttt{mcos-decoder} v0.1.0 (Python\,$\geq$\,3.9, NumPy\,$\geq$\,1.20,
+SciPy\,$\geq$\,1.7). The Halmstad Drone Detection Dataset is publicly
+archived at \href{https://doi.org/10.5281/zenodo.5500576}%
+{\texttt{10.5281/zenodo.5500576}}~\cite{halmstadzenodo}. The
+102{,}476-box total is reproduced by iterating the
+\texttt{*\_LABELS.mat} files under the dataset's \texttt{IR/} root and
+counting non-\texttt{None} returns:
+
+\begin{lstlisting}
+from pathlib import Path
+from mcos_decoder import load_groundtruth
+
+# IR/ is the unzipped Halmstad IR subset.
+total = sum(b is not None
+            for f in Path("IR").rglob("*_LABELS.mat")
+            for b in load_groundtruth(f))
+print(total)  # 102476
+\end{lstlisting}
+
 \bibliographystyle{plain}
-\begin{thebibliography}{9}
+\begin{thebibliography}{99}
 
 \bibitem{matlabcv}
 The MathWorks. \emph{Computer Vision Toolbox: groundTruth Class}.
@@ -212,11 +344,33 @@ A.~Mahalov. \emph{MatFileHandler: MATLAB .mat-file reading/writing API
 for .NET Standard}.
 \url{https://github.com/mahalex/MatFileHandler}.
 
+\bibitem{matio}
+\emph{mat-io: A pure-Python parser for MATLAB MAT-files with MCOS
+class support}. PyPI package by GitHub user \texttt{foreverallama},
+BSD-3-Clause, first released April 2025.
+\url{https://pypi.org/project/mat-io/};
+\url{https://github.com/foreverallama/matio}.
+
+\bibitem{mat73}
+\emph{mat73: Load MATLAB v7.3 .mat-files in Python}.
+PyPI package, GPL-3.0.
+\url{https://pypi.org/project/mat73/}.
+
+\bibitem{pymatreader}
+\emph{pymatreader: A Python module to read MATLAB-files}.
+PyPI package, BSD-2-Clause.
+\url{https://pypi.org/project/pymatreader/}.
+
 \bibitem{svanstrom2021}
-F.~Svanström, F.~Alonso-Fernandez, and C.~Englund.
+F.~Svanstr\"om, F.~Alonso-Fernandez, and C.~Englund.
 \emph{A dataset for multi-sensor drone detection}.
 Data in Brief, 39:107521, 2021.
 \url{https://doi.org/10.1016/j.dib.2021.107521}.
+
+\bibitem{halmstadzenodo}
+F.~Svanstr\"om, F.~Alonso-Fernandez, and C.~Englund.
+\emph{Drone detection dataset}. Zenodo, 2021.
+\url{https://doi.org/10.5281/zenodo.5500576}.
 
 \end{thebibliography}
 
